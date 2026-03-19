@@ -1,0 +1,10 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: exam_corrector_api
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app

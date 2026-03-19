@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+.env
+venv/
+.env.*
+
+temp.pdf
+/tmp/
+
+*.log
+
+# Docker
+*.tar
+
+# VS Code
+.vscode/
