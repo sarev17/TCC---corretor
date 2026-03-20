@@ -22,6 +22,9 @@ async def preview_exam(file: UploadFile = File(...)):
         contents = await file.read()
         filename = file.filename.lower()
 
+        # =========================
+        # CARREGAR IMAGENS
+        # =========================
         if filename.endswith(".pdf"):
             temp_path = "temp.pdf"
 
@@ -37,127 +40,137 @@ async def preview_exam(file: UploadFile = File(...)):
             image = Image.open(io.BytesIO(contents))
             images = [image]
 
-        all_pages = []
+        # =========================
+        # 🔥 UNIFICAR TODAS AS PÁGINAS
+        # =========================
+        stacked_pages = []
 
-        # 🔥 CONTADOR GLOBAL (ESSA É A CHAVE)
-        global_q_index = 0
+        max_width = 0
 
-        for page_index, pil_img in enumerate(images):
-
-            print("\n========================")
-            print(f"[PÁGINA] {page_index}")
-            print("========================")
-
+        for pil_img in images:
             pil_img = pil_img.convert("RGB")
             img_np = np.array(pil_img)
 
-            question_regions = segment_questions(pil_img)
+            cropped = crop_vertical_whitespace(img_np)
 
-            all_boxes = []
-            answers = []
+            stacked_pages.append(cropped)
+            
+            if img_np.shape[1] > max_width:
+                max_width = img_np.shape[1]
+
+        # 🔥 normalizar largura
+        normalized_pages = []
+        for img in stacked_pages:
+            if img.shape[1] != max_width:
+                img = cv2.resize(img, (max_width, img.shape[0]))
+            normalized_pages.append(img)
+
+        # 🔥 junta tudo
+        full_image = np.vstack(normalized_pages)
+
+        print("\n========================")
+        print("[PROCESSANDO IMAGEM ÚNICA]")
+        print("========================")
+
+        # =========================
+        # SEGMENTAÇÃO GLOBAL
+        # =========================
+        question_regions = segment_questions(Image.fromarray(full_image))
+
+        print(f"[TOTAL QUESTÕES]: {len(question_regions)}")
+
+        all_boxes = []
+
+        # =========================
+        # PROCESSAMENTO GLOBAL
+        # =========================
+        for q_index, r in enumerate(question_regions):
+
+            x, y, w, h = r["x"], r["y"], r["w"], r["h"]
+
+            if y + h > full_image.shape[0] or x + w > full_image.shape[1]:
+                continue
 
             # =========================
-            # DESENHAR QUESTÕES (COR POR COLUNA)
+            # DEBUG: NUMERO DA QUESTÃO
             # =========================
-            for r in question_regions:
-                color = (0, 255, 0) if r["x"] < img_np.shape[1] // 2 else (255, 255, 0)
+            cv2.putText(
+                full_image,
+                f"Q{q_index}",
+                (x + 10, y + 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (255, 0, 0),
+                2
+            )
 
+            question_img = full_image[y:y+h, x:x+w]
+
+            result = detect_option_lines(
+                question_img,
+                q_index=q_index,
+                debug=True
+            )
+
+            option_lines = result["lines"]
+            answer = result["answer"]
+
+            print(f"[RESULTADO] Q{q_index}: {answer}")
+
+            # =========================
+            # DESENHAR REGIÃO DA QUESTÃO
+            # =========================
+            all_boxes.append({
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+                "color": (0, 255, 0)
+            })
+
+            # =========================
+            # DESENHAR ALTERNATIVAS
+            # =========================
+            for line in option_lines:
                 all_boxes.append({
-                    **r,
-                    "color": color
+                    "x": x + line["x"],
+                    "y": y + line["y"],
+                    "w": line["w"],
+                    "h": line["h"],
+                    "color": (255, 0, 0)
                 })
 
             # =========================
-            # PROCESSAR QUESTÕES
+            # DESENHAR RESPOSTA
             # =========================
-            for r in question_regions:
-
-                # 🔥 USA CONTADOR GLOBAL
-                q_index = global_q_index
-
-                x, y, w, h = r["x"], r["y"], r["w"], r["h"]
-
-                if y + h > img_np.shape[0] or x + w > img_np.shape[1]:
-                    continue
-
-                # =========================
-                # NUMERO DA QUESTÃO (DEBUG)
-                # =========================
+            if answer and answer != "MULTIPLE":
                 cv2.putText(
-                    img_np,
-                    f"Q{q_index}",
-                    (x + 10, y + 30),
+                    full_image,
+                    f"{answer}",
+                    (x + w - 50, y + 40),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    1.0,
-                    (255, 0, 0),
-                    2
+                    1.2,
+                    (0, 255, 0),
+                    3
                 )
 
-                question_img = img_np[y:y+h, x:x+w]
-
-                result = detect_option_lines(
-                    question_img,
-                    q_index=q_index,
-                    debug=True
+            elif answer == "MULTIPLE":
+                cv2.putText(
+                    full_image,
+                    "M",
+                    (x + w - 50, y + 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.2,
+                    (0, 0, 255),
+                    3
                 )
 
-                option_lines = result["lines"]
-                answer = result["answer"]
+        # =========================
+        # OUTPUT FINAL
+        # =========================
+        debug_img = draw_boxes(Image.fromarray(full_image), all_boxes)
 
-                answers.append({
-                    "question": q_index,
-                    "answer": answer
-                })
-
-                print(f"[RESULTADO] Q{q_index}: {answer}")
-
-                # =========================
-                # DESENHAR ALTERNATIVAS
-                # =========================
-                for line in option_lines:
-                    all_boxes.append({
-                        "x": x + line["x"],
-                        "y": y + line["y"],
-                        "w": line["w"],
-                        "h": line["h"],
-                        "color": (255, 0, 0)
-                    })
-
-                # =========================
-                # DESENHAR RESPOSTA
-                # =========================
-                if answer and answer != "MULTIPLE":
-                    cv2.putText(
-                        img_np,
-                        f"{answer}",
-                        (x + w - 50, y + 40),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1.2,
-                        (0, 255, 0),
-                        3
-                    )
-
-                elif answer == "MULTIPLE":
-                    cv2.putText(
-                        img_np,
-                        "M",
-                        (x + w - 50, y + 40),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1.2,
-                        (0, 0, 255),
-                        3
-                    )
-
-                # 🔥 INCREMENTA NO FINAL
-                global_q_index += 1
-
-            debug_img = draw_boxes(Image.fromarray(img_np), all_boxes)
-
-            all_pages.append(debug_img)
-
-        final_image = np.vstack(all_pages)
-
-        _, buffer = cv2.imencode(".jpg", final_image)
+        _, buffer = cv2.imencode(".jpg", debug_img)
 
         return StreamingResponse(
             io.BytesIO(buffer.tobytes()),
@@ -172,3 +185,21 @@ async def preview_exam(file: UploadFile = File(...)):
             "error": str(e),
             "type": str(type(e))
         }
+
+
+def crop_vertical_whitespace(img, threshold=250, padding=10):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    _, thresh = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
+
+    row_sum = np.sum(thresh, axis=1)
+
+    non_empty_rows = np.where(row_sum > 0)[0]
+
+    if len(non_empty_rows) == 0:
+        return img
+
+    top = max(0, non_empty_rows[0] - padding)
+    bottom = min(img.shape[0], non_empty_rows[-1] + padding)
+
+    return img[top:bottom]
