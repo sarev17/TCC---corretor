@@ -1,12 +1,3 @@
-"""
-Serviço responsável por segmentar questões da prova.
-
-Recursos:
-- OCR para detectar "Questão"
-- suporte a 2 colunas
-- merge inteligente entre colunas (resolve questão quebrada)
-"""
-
 import cv2
 import numpy as np
 import pytesseract
@@ -46,7 +37,6 @@ def _detect_question_positions(image: np.ndarray) -> List[int]:
 
         normalized = text.strip().lower()
 
-        # tolerância OCR
         if normalized.startswith("quest"):
             y = data["top"][i]
             positions.append(y)
@@ -81,7 +71,7 @@ def _build_regions(positions: List[int], x_offset: int, width: int, height: int)
 
 
 # =========================
-# 🚀 MERGE INTELIGENTE ENTRE COLUNAS
+# MERGE ENTRE COLUNAS
 # =========================
 def _merge_cross_column_questions(regions: List[Dict], height: int) -> List[Dict]:
 
@@ -94,16 +84,12 @@ def _merge_cross_column_questions(regions: List[Dict], height: int) -> List[Dict
     for l in left:
         l_bottom = l["y"] + l["h"]
 
-        # se encosta no final → provável continuação
         if l_bottom > height * 0.85:
-
             for i, r in enumerate(right):
                 if i in used_right:
                     continue
 
-                # começa no topo → continuação
                 if r["y"] < height * 0.25:
-
                     merged.append({
                         "x": l["x"],
                         "y": l["y"],
@@ -118,12 +104,30 @@ def _merge_cross_column_questions(regions: List[Dict], height: int) -> List[Dict
         else:
             merged.append(l)
 
-    # adiciona regiões da direita não usadas
     for i, r in enumerate(right):
         if i not in used_right:
             merged.append(r)
 
-    return sorted(merged, key=lambda r: (r["x"], r["y"]))
+    return merged
+
+
+# =========================
+# 🔥 ORDEM DE LEITURA CORRETA
+# =========================
+def _sort_reading_order(regions: List[Dict], mid: int) -> List[Dict]:
+    left = []
+    right = []
+
+    for r in regions:
+        if r["x"] < mid:
+            left.append(r)
+        else:
+            right.append(r)
+
+    left = sorted(left, key=lambda r: r["y"])
+    right = sorted(right, key=lambda r: r["y"])
+
+    return left + right
 
 
 # =========================
@@ -136,15 +140,12 @@ def segment_questions(pil_image) -> List[Dict]:
 
     mid = width // 2
 
-    # dividir colunas
     left_img = img[:, :mid]
     right_img = img[:, mid:]
 
-    # detectar posições
     left_positions = _detect_question_positions(left_img)
     right_positions = _detect_question_positions(right_img)
 
-    # construir regiões
     left_regions = _build_regions(
         left_positions,
         x_offset=0,
@@ -161,7 +162,9 @@ def segment_questions(pil_image) -> List[Dict]:
 
     regions = left_regions + right_regions
 
-    # CORREÇÃO DO PROBLEMA DA QUESTÃO 3
     regions = _merge_cross_column_questions(regions, height)
+
+    # 🔥 AQUI É O MAIS IMPORTANTE
+    regions = _sort_reading_order(regions, mid)
 
     return regions

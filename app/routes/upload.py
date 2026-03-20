@@ -14,6 +14,7 @@ import os
 
 router = APIRouter(prefix="/upload")
 
+
 @router.post("/preview")
 async def preview_exam(file: UploadFile = File(...)):
 
@@ -21,9 +22,6 @@ async def preview_exam(file: UploadFile = File(...)):
         contents = await file.read()
         filename = file.filename.lower()
 
-        # =========================
-        # 1. Carregar imagens
-        # =========================
         if filename.endswith(".pdf"):
             temp_path = "temp.pdf"
 
@@ -41,9 +39,9 @@ async def preview_exam(file: UploadFile = File(...)):
 
         all_pages = []
 
-        # =========================
-        # 🔥 PROCESSAR TODAS AS PÁGINAS
-        # =========================
+        # 🔥 CONTADOR GLOBAL (ESSA É A CHAVE)
+        global_q_index = 0
+
         for page_index, pil_img in enumerate(images):
 
             print("\n========================")
@@ -58,22 +56,42 @@ async def preview_exam(file: UploadFile = File(...)):
             all_boxes = []
             answers = []
 
-            # caixas das questões
+            # =========================
+            # DESENHAR QUESTÕES (COR POR COLUNA)
+            # =========================
             for r in question_regions:
+                color = (0, 255, 0) if r["x"] < img_np.shape[1] // 2 else (255, 255, 0)
+
                 all_boxes.append({
                     **r,
-                    "color": (0, 255, 0)
+                    "color": color
                 })
 
             # =========================
             # PROCESSAR QUESTÕES
             # =========================
-            for q_index, r in enumerate(question_regions):
+            for r in question_regions:
+
+                # 🔥 USA CONTADOR GLOBAL
+                q_index = global_q_index
 
                 x, y, w, h = r["x"], r["y"], r["w"], r["h"]
 
                 if y + h > img_np.shape[0] or x + w > img_np.shape[1]:
                     continue
+
+                # =========================
+                # NUMERO DA QUESTÃO (DEBUG)
+                # =========================
+                cv2.putText(
+                    img_np,
+                    f"Q{q_index}",
+                    (x + 10, y + 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.0,
+                    (255, 0, 0),
+                    2
+                )
 
                 question_img = img_np[y:y+h, x:x+w]
 
@@ -93,7 +111,9 @@ async def preview_exam(file: UploadFile = File(...)):
 
                 print(f"[RESULTADO] Q{q_index}: {answer}")
 
-                # desenhar alternativas
+                # =========================
+                # DESENHAR ALTERNATIVAS
+                # =========================
                 for line in option_lines:
                     all_boxes.append({
                         "x": x + line["x"],
@@ -103,7 +123,9 @@ async def preview_exam(file: UploadFile = File(...)):
                         "color": (255, 0, 0)
                     })
 
-                # desenhar resposta
+                # =========================
+                # DESENHAR RESPOSTA
+                # =========================
                 if answer and answer != "MULTIPLE":
                     cv2.putText(
                         img_np,
@@ -126,13 +148,13 @@ async def preview_exam(file: UploadFile = File(...)):
                         3
                     )
 
+                # 🔥 INCREMENTA NO FINAL
+                global_q_index += 1
+
             debug_img = draw_boxes(Image.fromarray(img_np), all_boxes)
 
             all_pages.append(debug_img)
 
-        # =========================
-        # 🔥 JUNTAR TODAS AS PÁGINAS
-        # =========================
         final_image = np.vstack(all_pages)
 
         _, buffer = cv2.imencode(".jpg", final_image)
