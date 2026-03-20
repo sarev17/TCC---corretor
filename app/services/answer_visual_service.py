@@ -20,6 +20,9 @@ def _preprocess(image):
     return gray
 
 
+# =========================
+# DETECTAR LINHAS
+# =========================
 def _extract_line_candidates(question_img, debug_path=None):
     gray = _preprocess(question_img)
 
@@ -49,10 +52,9 @@ def _extract_line_candidates(question_img, debug_path=None):
 
     contour_img = question_img.copy()
 
-    for i, c in enumerate(contours):
+    for c in contours:
         x, y, w, h = cv2.boundingRect(c)
 
-        # filtro mínimo só para remover ruído muito pequeno
         if w > w_img * 0.15 and h > 12:
             candidates.append({
                 "x": x,
@@ -65,15 +67,13 @@ def _extract_line_candidates(question_img, debug_path=None):
     if debug_path:
         cv2.imwrite(f"{debug_path}/4_contours_filtered.png", contour_img)
 
-    candidates = sorted(candidates, key=lambda item: item["y"])
-    return candidates
+    return sorted(candidates, key=lambda item: item["y"])
 
 
+# =========================
+# AGRUPAMENTO
+# =========================
 def _group_by_vertical_spacing(lines, gap_factor=1.8):
-    """
-    Agrupa linhas em blocos com base no espaçamento vertical.
-    gap_factor define o quão maior o gap precisa ser para virar quebra de bloco.
-    """
     if not lines:
         return []
 
@@ -82,19 +82,16 @@ def _group_by_vertical_spacing(lines, gap_factor=1.8):
 
     gaps = []
     for i in range(len(lines) - 1):
-        current_bottom = lines[i]["y"] + lines[i]["h"]
-        next_top = lines[i + 1]["y"]
-        gap = max(0, next_top - current_bottom)
-        gaps.append(gap)
+        bottom = lines[i]["y"] + lines[i]["h"]
+        top = lines[i + 1]["y"]
+        gaps.append(max(0, top - bottom))
 
-    positive_gaps = [g for g in gaps if g > 0]
-    base_gap = np.median(positive_gaps) if positive_gaps else 0
-
+    base_gap = np.median([g for g in gaps if g > 0]) if gaps else 10
     if base_gap <= 0:
         base_gap = 10
 
     groups = []
-    current_group = [lines[0]]
+    current = [lines[0]]
 
     for i in range(1, len(lines)):
         prev = lines[i - 1]
@@ -103,25 +100,120 @@ def _group_by_vertical_spacing(lines, gap_factor=1.8):
         gap = curr["y"] - (prev["y"] + prev["h"])
 
         if gap > base_gap * gap_factor:
-            groups.append(current_group)
-            current_group = [curr]
+            groups.append(current)
+            current = [curr]
         else:
-            current_group.append(curr)
+            current.append(curr)
 
-    groups.append(current_group)
+    groups.append(current)
     return groups
 
 
 def _select_last_relevant_group(groups):
-    """
-    Por heurística, o último grupo é o bloco das alternativas.
-    """
-    if not groups:
-        return []
-
-    return groups[-1]
+    return groups[-1] if groups else []
 
 
+# =========================
+# DETECTAR RESPOSTA
+# =========================
+def detect_marked_answer(question_img, option_lines, q_index=0, debug=True):
+    debug_path = _ensure_debug_dir(q_index)
+
+    results = []
+    debug_img = question_img.copy()
+
+    for idx, line in enumerate(option_lines):
+        x, y, w, h = line["x"], line["y"], line["w"], line["h"]
+
+        # 🔥 EXPANSÃO PARA ESQUERDA (CRÍTICO)
+        expand_left = 0
+        x_start = max(0, x - expand_left)
+
+        roi = question_img[y:y+h, x_start:x+w]
+
+        if roi.size == 0:
+            continue
+
+        roi_h, roi_w = roi.shape[:2]
+
+        # 🔥 região da bolinha
+        bubble = roi[
+            int(roi_h * 0.2):int(roi_h * 0.8),
+            int(roi_w * 0.08):int(roi_w * 0.22)
+        ]
+
+        if bubble.size == 0:
+            continue
+
+        gray = cv2.cvtColor(bubble, cv2.COLOR_BGR2GRAY)
+
+        thresh = cv2.threshold(
+            gray, 0, 255,
+            cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+        )[1]
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+
+        density = np.sum(thresh > 0) / (thresh.shape[0] * thresh.shape[1])
+
+        print(f"[Q{q_index}] opção {idx}: {density:.3f}")
+
+        results.append({
+            "index": idx,
+            "density": density,
+            "box": line
+        })
+
+        if debug:
+            cv2.imwrite(f"{debug_path}/bubble_{idx}.png", bubble)
+            cv2.imwrite(f"{debug_path}/bubble_thresh_{idx}.png", thresh)
+
+            # desenha área analisada
+            debug_roi = roi.copy()
+            cv2.rectangle(
+                debug_roi,
+                (int(roi_w * 0.02), int(roi_h * 0.2)),
+                (int(roi_w * 0.25), int(roi_h * 0.8)),
+                (0, 0, 255),
+                2
+            )
+            cv2.imwrite(f"{debug_path}/roi_{idx}.png", debug_roi)
+
+    if not results:
+        return None
+
+    results = sorted(results, key=lambda r: r["density"], reverse=True)
+    best = results[0]
+
+    if best["density"] < 0.10:
+        return None
+
+    marked = [r for r in results if r["density"] > 0.18]
+    if len(marked) > 1:
+        return "MULTIPLE"
+
+    letters = ["A", "B", "C", "D"]
+
+    print(f"[Q{q_index}] resposta: {letters[best['index']]}")
+
+    if debug:
+        bx = best["box"]
+        cv2.rectangle(
+            debug_img,
+            (bx["x"], bx["y"]),
+            (bx["x"] + bx["w"], bx["y"] + bx["h"]),
+            (0, 255, 0),
+            3
+        )
+        cv2.imwrite(f"{debug_path}/answer.png", debug_img)
+
+    return letters[best["index"]]
+
+
+# =========================
+# PIPELINE
+# =========================
 def detect_option_lines(question_img, q_index=0, debug=True) -> List[Dict]:
     debug_path = _ensure_debug_dir(q_index)
 
@@ -133,30 +225,34 @@ def detect_option_lines(question_img, q_index=0, debug=True) -> List[Dict]:
         debug_path=debug_path if debug else None
     )
 
-    groups = _group_by_vertical_spacing(candidates, gap_factor=1.8)
+    groups = _group_by_vertical_spacing(candidates)
     option_lines = _select_last_relevant_group(groups)
 
     if debug:
         debug_img = question_img.copy()
 
-        # desenha todos os candidatos em amarelo
         for item in candidates:
             x, y, w, h = item["x"], item["y"], item["w"], item["h"]
             cv2.rectangle(debug_img, (x, y), (x + w, y + h), (0, 255, 255), 1)
 
-        # desenha grupo final em verde
         for item in option_lines:
             x, y, w, h = item["x"], item["y"], item["w"], item["h"]
             cv2.rectangle(debug_img, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
         cv2.imwrite(f"{debug_path}/5_lines_filtered.png", debug_img)
 
-        for idx, line in enumerate(option_lines):
-            x, y, w, h = line["x"], line["y"], line["w"], line["h"]
-            roi = question_img[y:y+h, x:x+w]
-            cv2.imwrite(f"{debug_path}/final_option_{idx}.png", roi)
-
-    print(f"[Q{q_index}] grupos encontrados: {len(groups)}")
+    print(f"[Q{q_index}] grupos: {len(groups)}")
     print(f"[Q{q_index}] linhas finais: {len(option_lines)}")
 
-    return option_lines
+    answer = detect_marked_answer(
+        question_img,
+        option_lines,
+        q_index=q_index,
+        debug=debug
+    )
+
+    return {
+        "lines": option_lines,
+        "answer": answer
+    }
+    
