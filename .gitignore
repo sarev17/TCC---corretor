@@ -17,3 +17,6 @@ temp.pdf
 
 # VS Code
 .vscode/
+
+debug/
+debug_questions/
